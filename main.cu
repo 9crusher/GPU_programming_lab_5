@@ -8,8 +8,11 @@ static void HandleError(cudaError_t err, const char*file,  int line ){
 	}
 }
 
-static const int BLOCK_SIZE = 16;
 static const int FILTER_SIZE = 3;
+// Kernel implementation total GPU block size
+static const int BLOCK_SIZE = 16;
+// Kernel implementation output size for a block
+static const int BLOCK_O_SIZE = BLOCK_SIZE - FILTER_SIZE + 1;
 static const float FILTER[] = { 0.11111111, 0.11111111, 0.11111111, 0.11111111, 0.11111111, 0.11111111, 0.11111111, 0.11111111, 0.11111111};
 
 static size_t getPixelIndex(int row, int col, int channel, int imageWidth){
@@ -151,46 +154,48 @@ int CPUBenchmark(unsigned char* inputImage, int inputHeight, int inputWidth, cha
 __global__ void convolutionalKernel(unsigned char* inputImage, unsigned char *outputImage, int height, int width, const float* __restrict__ M) {
 
     // Define share memory tile; this needs to accomodate padding
-    __shared__ unsigned char tile[BLOCK_SIZE + FILTER_SIZE - 1][BLOCK_SIZE + FILTER_SIZE - 1];
+    __shared__ unsigned char tile[BLOCK_SIZE][BLOCK_SIZE];
 
     // Calculate the radius of the mask (distance from center to edge)
     int maskRadius = FILTER_SIZE / 2;
 
     // Calculate output element coordinates
-    int i = (blockIdx.y * blockDim.y) + threadIdx.y;
-    int j = (blockIdx.x * blockDim.x) + threadIdx.x;
+    int i_out = (blockIdx.y * BLOCK_O_SIZE) + threadIdx.y;
+    int j_out = (blockIdx.x * BLOCK_O_SIZE) + threadIdx.x;
 
-    int loadIndexI = i - maskRadius;
-    int loadIndexJ = j - maskRadius;
+    int i_in = i_out - maskRadius;
+    int j_in = j_out - maskRadius;
 
+    // Iterate over each channel in this image
     for(int channel = 0; channel < 3; channel++){
 
         // Load elements from the image into the tile if we are within the bounds of the image
-        if(loadIndexI > -1 && loadIndexI < height && loadIndexJ > -1 && loadIndexJ < width){
-            tile[threadIdx.y][threadIdx.x] = inputImage[(((loadIndexI * width) + loadIndexJ) * 3) + channel];
+        if((i_in > -1) && (i_in < height) && (j_in > -1) && (j_in < width)){
+            tile[threadIdx.y][threadIdx.x] = inputImage[(((i_in * width) + j_in) * 3) + channel];
         } else {
             // If we are not within the bounds of the image, load 0
             tile[threadIdx.y][threadIdx.x] = 0.0f;
         }
+
         // Wait for entire tile to be loaded into shared memory before proceeding
         __syncthreads();
 
         float accum = 0.0f;
         // Ensure that we are within the bounds of the output tile
-        if(threadIdx.y < BLOCK_SIZE && threadIdx.y < BLOCK_SIZE){
+        if(threadIdx.y < BLOCK_O_SIZE && threadIdx.x < BLOCK_O_SIZE){
             // Iterate over all elements in the filter
             // We do not need a boundary check here because we have 0.0 padding
-            for(int maskI = 0; maskI < FILTER_SIZE; maskI++){
-                for(int maskJ = 0; maskJ < FILTER_SIZE; maskJ++){
+            for(int mask_i = 0; mask_i < FILTER_SIZE; mask_i++){
+                for(int mask_j = 0; mask_j < FILTER_SIZE; mask_j++){
                     // Add the pixel value * mask value to the accumulated value for the pixel
-                    accum += (M[maskI * FILTER_SIZE + maskJ] * tile[maskI + threadIdx.y][maskJ + threadIdx.x]);
+                    accum += (M[mask_i * FILTER_SIZE + mask_j] * tile[mask_i + threadIdx.y][mask_j + threadIdx.x]);
                 }
             }
             
             // If our output index overlaps with the image, save the accum result in the output image
-            if(i < height && j < width){
+            if(i_out < height && j_out < width){
                 // Calculate corresponding 1D output index and squeez accum between 0 and 1
-                outputImage[(((i * width) + j) * 3) + channel] = (unsigned char)max(min(255.0, accum), 0.0);
+                outputImage[(((i_out * width) + j_out) * 3) + channel] = (unsigned char)max(min(255.0, accum), 0.0);
             }
         }
         // Wait for all calculations to be done on this channel before going to next
@@ -222,7 +227,7 @@ void GPUBenchmark(unsigned char* h_inputImage, int height, int width, char* outp
 
     // Calculate grid layout
     dim3 DimBlock(BLOCK_SIZE, BLOCK_SIZE);
-    dim3 DimGrid(ceil((float)width / BLOCK_SIZE), ceil((float)height / BLOCK_SIZE));
+    dim3 DimGrid(ceil((float)width / BLOCK_O_SIZE), ceil((float)height / BLOCK_O_SIZE));
 
     //Run the convolutional kernel
     convolutionalKernel<<<DimGrid, DimBlock>>>(d_inputImage, d_outputImage, height, width, FILTER);
