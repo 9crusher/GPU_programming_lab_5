@@ -22,7 +22,8 @@ static const int BLOCK_SIZE = 16;
 // Kernel implementation output size for a block
 static const int BLOCK_O_SIZE = BLOCK_SIZE - FILTER_SIZE + 1;
 // Define filter to be applied by CPU and GPU
-static const float FILTER[] = { 0.11111111, 0.11111111, 0.11111111, 0.11111111, 0.11111111, 0.11111111, 0.11111111, 0.11111111, 0.11111111};
+//static const float FILTER[] = { 0.11111111, 0.11111111, 0.11111111, 0.11111111, 0.11111111, 0.11111111, 0.11111111, 0.11111111, 0.11111111};
+static const float FILTER[] = { -1, -1, -1, -1, 8, -1, -1, -1, -1};
 
 // Define a function to get the flattened index in a 3-channel image (used in device and host)
 __host__ __device__ size_t getPixelIndex(int row, int col, int channel, int imageWidth){

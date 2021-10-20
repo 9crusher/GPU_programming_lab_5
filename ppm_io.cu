@@ -2,10 +2,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifndef PPMIO
-#define PPMIO
-#endif
-
 int readImage(char* filepath, int* height, int* width, unsigned char** imagePtr){
     FILE* fp = fopen(filepath, "rb");
 
