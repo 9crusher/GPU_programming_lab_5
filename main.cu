@@ -1,140 +1,70 @@
 #include <stdio.h>
 #include <math.h>
+#include "ppm_io.h"
 #define HANDLE_ERROR(err) (HandleError(err, __FILE__, __LINE__));
 
+// Define a function used to wrap CUDA API calls and print error
 static void HandleError(cudaError_t err, const char*file,  int line ){
 	if (err != cudaSuccess){
 		printf("%s in %s at line %d\n", cudaGetErrorString(err), file, line );
 	}
 }
 
+// Define function to calculate elapsed time in ms
+float cpu_time(timespec* start, timespec* end){
+	return ((1e9*end->tv_sec + end->tv_nsec) -(1e9*start->tv_sec + start->tv_nsec))/1e6;
+}
+
+// Side length of FILTER
 static const int FILTER_SIZE = 3;
 // Kernel implementation total GPU block size
 static const int BLOCK_SIZE = 16;
 // Kernel implementation output size for a block
 static const int BLOCK_O_SIZE = BLOCK_SIZE - FILTER_SIZE + 1;
+// Define filter to be applied by CPU and GPU
 static const float FILTER[] = { 0.11111111, 0.11111111, 0.11111111, 0.11111111, 0.11111111, 0.11111111, 0.11111111, 0.11111111, 0.11111111};
 
+// Define a function to get the flattened index in a 3-channel image (used in device and host)
 __host__ __device__ size_t getPixelIndex(int row, int col, int channel, int imageWidth){
     return (((row * imageWidth) + col) * 3) + channel;
 }
 
-int readImage(char* filepath, int* height, int* width, unsigned char** imagePtr){
-    FILE* fp = fopen(filepath, "rb");
-
-    // Ensure that the file opening succeeded
-    if(fp == NULL){
-        printf("Failed to open file: %s\n", filepath);
-        return -1;
-    }
-
-    // Define variable to store each metadata line as they are read
-    char* currentLine = NULL;
-    size_t lineLength = 0;
-
-    // Parse first metadata line; getline gets the newline as part of the string
-    if(getline(&currentLine, &lineLength, fp) == -1 || !strcmp(currentLine, "P6")){
-        printf("Unexpected value in first metadata line from file: %s\n", filepath);
-        printf("%s\n", currentLine);
-        fclose(fp);
-        return -1;
-    }
-    
-    // Read all comment lines; end with the size line in storage
-    do {
-        if(getline(&currentLine, &lineLength, fp) == -1){
-            printf("Unexpected value in metadata line from file: %s\n", filepath);
-            fclose(fp);
-            return -1;
-        }
-
-    } while(currentLine[0] == '#');
-
-
-    // Read the width and height metadata
-    if (sscanf(currentLine, "%d %d", width, height) != 2) {
-        printf("Failed to load valid dimensions from file: %s \n", filepath);
-        fclose(fp);
-        return -1;
-   }
-
-
-    // Parse max value metadata
-    if(getline(&currentLine, &lineLength, fp) == -1 || !strcmp(currentLine, "255")){
-        printf("Unexpected maximum value in metadata of file: %s\n", filepath);
-        fclose(fp);
-        return -1;
-    }
-
-
-    // Set the pointer to the image array to the allocated space; 3 channels per pixel
-    size_t imageSizeInBytes = (*height) * (*width) * 3;
-    (*imagePtr) = (unsigned char*)malloc(imageSizeInBytes);
-
-
-    // Read pixel values into array (1 byte per pixel)
-    if(fread((void*)(*imagePtr), 1, imageSizeInBytes, fp) != imageSizeInBytes){
-        printf("Failed to load pixel data from image: %s\n", filepath);
-        fclose(fp);
-        return -1;
-    }
-    
-    
-    // Close the file
-    fclose(fp);
-    return 0;
-}
-
-int writeImage(char* filepath, unsigned char* imagePtr, int height, int width){
-    // Open write file
-    FILE* fp = fopen(filepath, "wb");
-
-    // Ensure the write file opened
-    if (fp == NULL) {
-        printf("Could not write file: %s\n", filepath);
-        return -1;
-   }
-
-   // Format metadata
-   fprintf(fp, "P6\n");
-   // Comment metadata
-   fprintf(fp, "#Placeholder comment\n");
-   // Shape metadata
-   fprintf(fp, "%d %d\n", width, height);
-   // Max value metadata
-   fprintf(fp, "%d\n", 255);
-
-    // Write actual pixel data, 3 color values per index
-    fwrite(imagePtr, 1,  3 * width * height, fp);
-    fclose(fp);
-    return 0;
-}
-
+// Time the CPU implementation of convolution
 int CPUBenchmark(unsigned char* inputImage, int inputHeight, int inputWidth, char* outputFile){
+
+    // Declare start and end times and record start time
+    timespec ts, te;
+    clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
+
     // Allocate an output image
     unsigned char* outputImage = (unsigned char*)malloc(inputWidth * inputHeight * 3);
+
     // Calculate the radius of the filter
     int filterRadius = FILTER_SIZE / 2;
+
     // Iterate over each pixel index and each of R, G, B channels in those pixels
     for(int row = 0; row < inputHeight; row++){
         for(int col = 0; col < inputWidth; col++){
             for(int channel = 0; channel < 3; channel++){
                 double accum = 0;
+
                 // Iterate over the entire filter, indexed from the center
                 for(int filterRow = -1 * filterRadius; filterRow <= filterRadius; filterRow++){
                     for(int filterCol = -1 * filterRadius; filterCol <= filterRadius; filterCol++){
+
                         // Convert from kernel index to image index
                         int rowOffset = row + filterRow;
                         int colOffset = col + filterCol;
 
                         // Ensure that we are within the bounds of the image
                         if((rowOffset >= 0) && (rowOffset < inputHeight) && (colOffset >= 0) && (colOffset < inputWidth)){
+
                             // Get the value of the pixel in the original image and the corresponding mask value
                             unsigned char pixelVal = inputImage[getPixelIndex(rowOffset, colOffset, channel, inputWidth)];
                             double maskVal = FILTER[((filterRadius + filterRow) * FILTER_SIZE) + filterCol + filterRadius];
 
                             // Add the mask application at the index to the accumulated total
-                            accum += ((int)pixelVal * maskVal);
+                            accum += (pixelVal * maskVal);
                         }
                     }
                 }
@@ -143,8 +73,16 @@ int CPUBenchmark(unsigned char* inputImage, int inputHeight, int inputWidth, cha
             }
         }
     }
+
+    // Report CPU runtime(ms)
+    clock_gettime(CLOCK_MONOTONIC_RAW, &te);
+    printf("CPU elapsed time: %f\n", cpu_time(&ts, &te));
+
     // Save the output image
-    writeImage(outputFile, outputImage, inputHeight, inputWidth);
+    if(writeImage(outputFile, outputImage, inputHeight, inputWidth) == -1){
+        printf("Failed to write image from CPU\n");
+        return -1;
+    }
 
     // Free memory
     free(outputImage);
@@ -163,6 +101,7 @@ __global__ void convolutionalKernel(unsigned char* inputImage, unsigned char* ou
     int i_out = (blockIdx.y * BLOCK_O_SIZE) + threadIdx.y;
     int j_out = (blockIdx.x * BLOCK_O_SIZE) + threadIdx.x;
 
+    // Calculate the indices of the values to load
     int i_in = i_out - maskRadius;
     int j_in = j_out - maskRadius;
 
@@ -179,33 +118,35 @@ __global__ void convolutionalKernel(unsigned char* inputImage, unsigned char* ou
 
         // Wait for entire tile to be loaded into shared memory before proceeding
         __syncthreads();
-        // ************************************************************************
-        //************************************************************************
+
+        // Define variable to hold running sum of filtered values at pixel & channel
         float accum = 0.0f;
+
         // Ensure that we are within the bounds of the output tile
         if(threadIdx.y < BLOCK_O_SIZE && threadIdx.x < BLOCK_O_SIZE){
-            // Iterate over all elements in the filter
-            // We do not need a boundary check here because we have 0.0 padding
+
+            // Iterate over all elements in the filter; no boundary check here because we have 0.0 padding
             for(int mask_i = 0; mask_i < FILTER_SIZE; mask_i++){
                 for(int mask_j = 0; mask_j < FILTER_SIZE; mask_j++){
+
                     // Add the pixel value * mask value to the accumulated value for the pixel
-                    accum += (M[0] * (int)tile[mask_i + threadIdx.y][mask_j + threadIdx.x]);
+                    accum += (M[mask_i * FILTER_SIZE + mask_j] * tile[mask_i + threadIdx.y][mask_j + threadIdx.x]);
                 }
             }
 
-            // MEMORY ERROR
             // If our output index overlaps with the image, save the accum result in the output image
             if(i_out < height && j_out < width){
                 // Calculate corresponding 1D output index and squeez accum between 0 and 1
                 outputImage[getPixelIndex(i_out, j_out, channel, width)] = (unsigned char)max(min(255.0, accum), 0.0);
             }
         }
+
         // Wait for all calculations to be done on this channel before going to next
         __syncthreads();
     }
 }
 
-void GPUBenchmark(unsigned char* h_inputImage, int height, int width, char* outputFile){
+int GPUBenchmark(unsigned char* h_inputImage, int height, int width, char* outputFile){
 
     // Get the CUDA device count to ensure we can run on GPU
     cudaError_t error;
@@ -214,8 +155,12 @@ void GPUBenchmark(unsigned char* h_inputImage, int height, int width, char* outp
 
     if(error != cudaSuccess){	//if there is an error getting the device count
         printf("\nERROR calling cudaGetDeviceCount()\n");	//display an error message
-        return;	// exit the function
+        return -1;// exit the function
     }
+
+    // Define start and end time variables; store start to inculde memory moves
+    timespec ts, te;
+    clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
 
     // Move input image to device
     unsigned char* d_inputImage;
@@ -232,7 +177,6 @@ void GPUBenchmark(unsigned char* h_inputImage, int height, int width, char* outp
     HANDLE_ERROR(cudaMemcpy(d_filter, FILTER, FILTER_SIZE * FILTER_SIZE * sizeof(float), cudaMemcpyHostToDevice));
 
 
-
     // Calculate grid layout
     dim3 DimBlock(BLOCK_SIZE, BLOCK_SIZE);
     dim3 DimGrid(ceil((float)width / BLOCK_O_SIZE), ceil((float)height / BLOCK_O_SIZE));
@@ -244,18 +188,24 @@ void GPUBenchmark(unsigned char* h_inputImage, int height, int width, char* outp
     unsigned char* h_outputImage = (unsigned char*)malloc(width * height * 3);
     HANDLE_ERROR(cudaMemcpy(h_outputImage, d_outputImage, width * height * 3, cudaMemcpyDeviceToHost));
 
+    // Report GPU runtime (ms) with memory moves
+    clock_gettime(CLOCK_MONOTONIC_RAW, &te);
+    printf("GPU elapsed time: %f\n", cpu_time(&ts, &te));
+
     // Write image
-    writeImage(outputFile, h_outputImage, height, width);
+    if(writeImage(outputFile, h_outputImage, height, width) == -1){
+        printf("Failed to write image from GPU\n");
+        return -1;
+    }
 
     // Free all allocated memory
     HANDLE_ERROR(cudaFree(d_inputImage));
     HANDLE_ERROR(cudaFree(d_outputImage));
     HANDLE_ERROR(cudaFree(d_filter));
     free(h_outputImage);
+
+    return 0;
 }
-
-
-
 
 int main(int argc, char* argv[]){
 
@@ -279,11 +229,24 @@ int main(int argc, char* argv[]){
     int height = 0;
 
     // Intake the image and save it in inputImage
-    readImage(inputImagePath, &height, &width, &inputImage);
+    if(readImage(inputImagePath, &height, &width, &inputImage) == -1){
+        printf("Exiting program due to image read error \n");
+        return -1;
+    }
 
     // Run the GPU benchamark on the image
-    CPUBenchmark(inputImage, height, width, outputCPUPath);
-    GPUBenchmark(inputImage, height, width, outputGPUPath);
+    if(CPUBenchmark(inputImage, height, width, outputCPUPath) == -1){
+        printf("Exiting program due to CPU benchmark error");
+        free(inputImage);
+        return -1;
+    }
+
+    if(GPUBenchmark(inputImage, height, width, outputGPUPath) == -1){
+        printf("Exiting program due to GPU benchmark error");
+        free(inputImage);
+        return -1;
+    }
+
     free(inputImage);
     return 0;
 }
