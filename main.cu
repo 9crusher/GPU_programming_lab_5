@@ -226,6 +226,7 @@ void GPUBenchmark(unsigned char* h_inputImage, int height, int width, char* outp
 
     //Run the convolutional kernel
     convolutionalKernel<<<DimGrid, DimBlock>>>(d_inputImage, d_outputImage, height, width, FILTER);
+    cudaDeviceSynchronize();
 
     // Copy output back to host
     unsigned char* h_outputImage = (unsigned char*)malloc(width * height * 3);
@@ -257,7 +258,7 @@ int main(int argc, char* argv[]){
     char* outputGPUPath = argv[3];
 
     // Print validation of what file is being used
-    printf("Running on file: %s", inputImagePath);
+    printf("Running on file: %s\n", inputImagePath);
 
     // Declare variables for file reading
     unsigned char* inputImage = NULL;
