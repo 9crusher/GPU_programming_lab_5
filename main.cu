@@ -15,7 +15,7 @@ static const int BLOCK_SIZE = 16;
 static const int BLOCK_O_SIZE = BLOCK_SIZE - FILTER_SIZE + 1;
 static const float FILTER[] = { 0.11111111, 0.11111111, 0.11111111, 0.11111111, 0.11111111, 0.11111111, 0.11111111, 0.11111111, 0.11111111};
 
-static size_t getPixelIndex(int row, int col, int channel, int imageWidth){
+__host__ __device__ size_t getPixelIndex(int row, int col, int channel, int imageWidth){
     return (((row * imageWidth) + col) * 3) + channel;
 }
 
@@ -151,7 +151,7 @@ int CPUBenchmark(unsigned char* inputImage, int inputHeight, int inputWidth, cha
     return 0;
 }
 
-__global__ void convolutionalKernel(unsigned char* inputImage, unsigned char *outputImage, int height, int width, const float* __restrict__ M) {
+__global__ void convolutionalKernel(unsigned char* inputImage, unsigned char* outputImage, int height, int width, const float* __restrict__ M) {
 
     // Define share memory tile; this needs to accomodate padding
     __shared__ unsigned char tile[BLOCK_SIZE][BLOCK_SIZE];
@@ -171,7 +171,7 @@ __global__ void convolutionalKernel(unsigned char* inputImage, unsigned char *ou
 
         // Load elements from the image into the tile if we are within the bounds of the image
         if((i_in > -1) && (i_in < height) && (j_in > -1) && (j_in < width)){
-            tile[threadIdx.y][threadIdx.x] = inputImage[(((i_in * width) + j_in) * 3) + channel];
+            tile[threadIdx.y][threadIdx.x] = inputImage[getPixelIndex(i_in, j_in, channel, width)];
         } else {
             // If we are not within the bounds of the image, load 0
             tile[threadIdx.y][threadIdx.x] = 0.0f;
@@ -179,7 +179,8 @@ __global__ void convolutionalKernel(unsigned char* inputImage, unsigned char *ou
 
         // Wait for entire tile to be loaded into shared memory before proceeding
         __syncthreads();
-
+        // ************************************************************************
+        //************************************************************************
         float accum = 0.0f;
         // Ensure that we are within the bounds of the output tile
         if(threadIdx.y < BLOCK_O_SIZE && threadIdx.x < BLOCK_O_SIZE){
@@ -188,14 +189,15 @@ __global__ void convolutionalKernel(unsigned char* inputImage, unsigned char *ou
             for(int mask_i = 0; mask_i < FILTER_SIZE; mask_i++){
                 for(int mask_j = 0; mask_j < FILTER_SIZE; mask_j++){
                     // Add the pixel value * mask value to the accumulated value for the pixel
-                    accum += (M[mask_i * FILTER_SIZE + mask_j] * tile[mask_i + threadIdx.y][mask_j + threadIdx.x]);
+                    accum += (M[0] * (int)tile[mask_i + threadIdx.y][mask_j + threadIdx.x]);
                 }
             }
-            
+
+            // MEMORY ERROR
             // If our output index overlaps with the image, save the accum result in the output image
             if(i_out < height && j_out < width){
                 // Calculate corresponding 1D output index and squeez accum between 0 and 1
-                outputImage[(((i_out * width) + j_out) * 3) + channel] = (unsigned char)max(min(255.0, accum), 0.0);
+                outputImage[getPixelIndex(i_out, j_out, channel, width)] = (unsigned char)max(min(255.0, accum), 0.0);
             }
         }
         // Wait for all calculations to be done on this channel before going to next
@@ -224,14 +226,19 @@ void GPUBenchmark(unsigned char* h_inputImage, int height, int width, char* outp
     unsigned char* d_outputImage;
     HANDLE_ERROR(cudaMalloc(&d_outputImage, width * height * 3));
 
+    // Move filter to device memory
+    float* d_filter;
+    HANDLE_ERROR(cudaMalloc(&d_filter, FILTER_SIZE * FILTER_SIZE * sizeof(float)));
+    HANDLE_ERROR(cudaMemcpy(d_filter, FILTER, FILTER_SIZE * FILTER_SIZE * sizeof(float), cudaMemcpyHostToDevice));
+
+
 
     // Calculate grid layout
     dim3 DimBlock(BLOCK_SIZE, BLOCK_SIZE);
     dim3 DimGrid(ceil((float)width / BLOCK_O_SIZE), ceil((float)height / BLOCK_O_SIZE));
 
     //Run the convolutional kernel
-    convolutionalKernel<<<DimGrid, DimBlock>>>(d_inputImage, d_outputImage, height, width, FILTER);
-    cudaDeviceSynchronize();
+    convolutionalKernel<<<DimGrid, DimBlock>>>(d_inputImage, d_outputImage, height, width, d_filter);
 
     // Copy output back to host
     unsigned char* h_outputImage = (unsigned char*)malloc(width * height * 3);
@@ -243,6 +250,7 @@ void GPUBenchmark(unsigned char* h_inputImage, int height, int width, char* outp
     // Free all allocated memory
     HANDLE_ERROR(cudaFree(d_inputImage));
     HANDLE_ERROR(cudaFree(d_outputImage));
+    HANDLE_ERROR(cudaFree(d_filter));
     free(h_outputImage);
 }
 
