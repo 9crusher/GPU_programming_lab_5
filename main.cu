@@ -11,7 +11,7 @@ static size_t getPixelIndex(int row, int col, int channel, int imageWidth){
     return (((row * imageWidth) + col) * 3) + channel;
 }
 
-int convolutionCPU(char** inputImagePtr, int inputHeight, int inputWidth, char** outputImagePtr){
+int convolutionCPU(unsigned char** inputImagePtr, int inputHeight, int inputWidth, unsigned char** outputImagePtr){
     // Calculate the radius of the filter
     int filterRadius = FILTER_SIZE / 2;
     // Iterate over each pixel index and each of R, G, B channels in those pixels
@@ -29,23 +29,22 @@ int convolutionCPU(char** inputImagePtr, int inputHeight, int inputWidth, char**
                         // Ensure that we are within the bounds of the image
                         if((rowOffset >= 0) && (rowOffset < inputHeight) && (colOffset >= 0) && (colOffset < inputWidth)){
                             // Get the value of the pixel in the original image and the corresponding mask value
-                            char pixelVal = (*inputImagePtr)[getPixelIndex(rowOffset, colOffset, channel, inputWidth)];
-                            double maskVal = FILTER[(filterRadius + filterRow) * FILTER_SIZE + filterCol + FILTER_SIZE];
+                            unsigned char pixelVal = (*inputImagePtr)[getPixelIndex(rowOffset, colOffset, channel, inputWidth)];
+                            double maskVal = FILTER[((filterRadius + filterRow) * FILTER_SIZE) + filterCol + filterRadius];
 
                             // Add the mask application at the index to the accumulated total
-                            accum += pixelVal * 0.111111111;
+                            accum += ((int)pixelVal * maskVal);
                         }
                     }
                 }
-                //printf("%f\n", accum);
-                //(*outputImagePtr)[getPixelIndex(row, col, channel, inputWidth)] = (char)max(min(255.0, accum), 0.0);
+                (*outputImagePtr)[getPixelIndex(row, col, channel, inputWidth)] = (unsigned char)max(min(255.0, accum), 0.0);
             }
         }
     }
     return 0;
 }
 
-int readImage(char* filepath, int* height, int* width, char** imagePtr){
+int readImage(char* filepath, int* height, int* width, unsigned char** imagePtr){
     FILE* fp = fopen(filepath, "rb");
 
     // Ensure that the file opening succeeded
@@ -95,7 +94,7 @@ int readImage(char* filepath, int* height, int* width, char** imagePtr){
 
     // Set the pointer to the image array to the allocated space; 3 channels per pixel
     size_t imageSizeInBytes = (*height) * (*width) * 3;
-    (*imagePtr) = (char*)malloc(imageSizeInBytes);
+    (*imagePtr) = (unsigned char*)malloc(imageSizeInBytes);
 
 
     // Read pixel values into array (1 byte per pixel)
@@ -111,7 +110,7 @@ int readImage(char* filepath, int* height, int* width, char** imagePtr){
     return 0;
 }
 
-int writeImage(char *filepath, char** imagePtr, int height, int width){
+int writeImage(char* filepath, unsigned char** imagePtr, int height, int width){
     // Open write file
     FILE* fp = fopen(filepath, "wb");
 
@@ -150,18 +149,15 @@ int main(int argc, char* argv[]){
     char* outputCPUPath = argv[2];
     char* outputGPUPath = argv[3];
 
-    char* inputImage = NULL;
-    char* outputImage = NULL;
+    unsigned char* inputImage = NULL;
+    unsigned char* outputImage = NULL;
     int width = 0;
     int height = 0;
 
 
     readImage("hereford_512.ppm", &height, &width, &inputImage);
-    //readImage("hereford_512.ppm", &height, &width, &outputImage);
-    //convolutionCPU(&inputImage, height, width, &outputImage);
-    //writeImage("test.ppm", &outputImage, height, width);
-    for(int i = 0; i < 10; i++){
-        printf("%c\n", inputImage[i]);
-    }
+    readImage("hereford_512.ppm", &height, &width, &outputImage);
+    convolutionCPU(&inputImage, height, width, &outputImage);
+    writeImage("test.ppm", &outputImage, height, width);
     return 0;
 }
